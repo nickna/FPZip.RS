@@ -1,0 +1,3 @@
+[workspace]
+members = ["fpzip", "fpzip-ffi", "fpzip-async"]
+resolver = "2"

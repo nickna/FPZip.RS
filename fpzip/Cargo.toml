@@ -1,0 +1,27 @@
+[package]
+name = "fpzip-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Nick B. Nassiri"]
+license = "MIT"
+description = "Lossless floating-point compression for multi-dimensional arrays"
+repository = "https://github.com/nickna/FPZip.RS"
+keywords = ["compression", "fpzip", "floating-point", "scientific-computing", "lossless"]
+categories = ["compression", "science", "algorithms"]
+
+[features]
+default = ["std"]
+std = ["alloc", "thiserror/std"]
+alloc = []
+rayon = ["dep:rayon", "std"]
+
+[dependencies]
+thiserror = { version = "2", default-features = false }
+rayon = { version = "1", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "compress"
+harness = false

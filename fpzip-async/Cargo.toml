@@ -1,0 +1,8 @@
+[package]
+name = "fpzip-async"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fpzip-rs = { path = "../fpzip" }
+tokio = { version = "1", features = ["io-util", "rt"] }

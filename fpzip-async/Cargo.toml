@@ -2,7 +2,7 @@
 name = "fpzip-async"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.63"
+rust-version = "1.74"
 authors = ["Nick B. Nassiri"]
 license = "MIT"
 description = "Async wrappers for fpzip-rs floating-point compression"

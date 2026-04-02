@@ -2,7 +2,7 @@
 name = "fpzip-ffi"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.63"
+rust-version = "1.64"
 authors = ["Nick B. Nassiri"]
 license = "MIT"
 description = "C FFI bindings for fpzip-rs floating-point compression"

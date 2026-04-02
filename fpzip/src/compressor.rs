@@ -9,39 +9,54 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-/// Compresses a float slice.
-pub fn compress_f32(data: &[f32], nx: u32, ny: u32, nz: u32, nf: u32) -> Result<Vec<u8>> {
+// --- Core compression/decompression with precision ---
+
+fn compress_f32_prec(
+    data: &[f32],
+    nx: u32,
+    ny: u32,
+    nz: u32,
+    nf: u32,
+    prec: u32,
+) -> Result<Vec<u8>> {
     validate_dimensions(data.len(), nx, ny, nz, nf)?;
 
-    let header = FpZipHeader::new(FpZipType::Float, nx, ny, nz, nf);
+    let mut header = FpZipHeader::new(FpZipType::Float, nx, ny, nz, nf);
+    // C++ convention: prec=0 means full precision, but the header stores the actual bits.
+    // C++ sets stream->prec from the user, and compress4d reads it:
+    //   int bits = stream->prec ? stream->prec : (int)(CHAR_BIT * sizeof(T));
+    let bits = if prec == 0 { 32 } else { prec };
+    header.prec = prec;
     let mut enc = RangeEncoder::with_capacity(data.len() * 4);
-
-    // Write header through the range encoder (C++ compatible)
     header.write_to_encoder(&mut enc);
-
-    encoder::compress_4d_float(&mut enc, data, nx as i32, ny as i32, nz as i32, nf as i32);
-    let output = enc.finish();
-
-    Ok(output)
+    encoder::compress_4d_float(
+        &mut enc, data, nx as i32, ny as i32, nz as i32, nf as i32, bits,
+    );
+    Ok(enc.finish())
 }
 
-/// Compresses a double slice.
-pub fn compress_f64(data: &[f64], nx: u32, ny: u32, nz: u32, nf: u32) -> Result<Vec<u8>> {
+fn compress_f64_prec(
+    data: &[f64],
+    nx: u32,
+    ny: u32,
+    nz: u32,
+    nf: u32,
+    prec: u32,
+) -> Result<Vec<u8>> {
     validate_dimensions(data.len(), nx, ny, nz, nf)?;
 
-    let header = FpZipHeader::new(FpZipType::Double, nx, ny, nz, nf);
+    let mut header = FpZipHeader::new(FpZipType::Double, nx, ny, nz, nf);
+    let bits = if prec == 0 { 64 } else { prec };
+    header.prec = prec;
     let mut enc = RangeEncoder::with_capacity(data.len() * 8);
-
     header.write_to_encoder(&mut enc);
-
-    encoder::compress_4d_double(&mut enc, data, nx as i32, ny as i32, nz as i32, nf as i32);
-    let output = enc.finish();
-
-    Ok(output)
+    encoder::compress_4d_double(
+        &mut enc, data, nx as i32, ny as i32, nz as i32, nf as i32, bits,
+    );
+    Ok(enc.finish())
 }
 
-/// Decompresses data to a float vector.
-pub fn decompress_f32(data: &[u8]) -> Result<Vec<f32>> {
+fn decompress_f32_impl(data: &[u8]) -> Result<(FpZipHeader, Vec<f32>)> {
     let mut dec = RangeDecoder::new(data);
     dec.init();
 
@@ -53,9 +68,9 @@ pub fn decompress_f32(data: &[u8]) -> Result<Vec<f32>> {
         });
     }
 
+    let bits = if header.prec == 0 { 32 } else { header.prec };
     let total = header.total_elements() as usize;
     let mut result = vec![0.0f32; total];
-
     decoder::decompress_4d_float(
         &mut dec,
         &mut result,
@@ -63,13 +78,12 @@ pub fn decompress_f32(data: &[u8]) -> Result<Vec<f32>> {
         header.ny as i32,
         header.nz as i32,
         header.nf as i32,
+        bits,
     );
-
-    Ok(result)
+    Ok((header, result))
 }
 
-/// Decompresses data to a double vector.
-pub fn decompress_f64(data: &[u8]) -> Result<Vec<f64>> {
+fn decompress_f64_impl(data: &[u8]) -> Result<(FpZipHeader, Vec<f64>)> {
     let mut dec = RangeDecoder::new(data);
     dec.init();
 
@@ -81,9 +95,9 @@ pub fn decompress_f64(data: &[u8]) -> Result<Vec<f64>> {
         });
     }
 
+    let bits = if header.prec == 0 { 64 } else { header.prec };
     let total = header.total_elements() as usize;
     let mut result = vec![0.0f64; total];
-
     decoder::decompress_4d_double(
         &mut dec,
         &mut result,
@@ -91,12 +105,56 @@ pub fn decompress_f64(data: &[u8]) -> Result<Vec<f64>> {
         header.ny as i32,
         header.nz as i32,
         header.nf as i32,
+        bits,
     );
+    Ok((header, result))
+}
 
-    Ok(result)
+// --- Public API ---
+
+/// Compresses a float slice at full 32-bit precision (lossless).
+///
+/// For lossy compression with reduced precision, use [`FpZipCompressor`] with
+/// [`prec`](FpZipCompressor::prec).
+///
+/// # Arguments
+/// * `data` - The float array to compress.
+/// * `nx`, `ny`, `nz`, `nf` - Array dimensions. `data.len()` must equal `nx * ny * nz * nf`.
+///
+/// # Errors
+/// Returns [`FpZipError::DimensionMismatch`] if the data length does not match the dimensions.
+pub fn compress_f32(data: &[f32], nx: u32, ny: u32, nz: u32, nf: u32) -> Result<Vec<u8>> {
+    compress_f32_prec(data, nx, ny, nz, nf, 32)
+}
+
+/// Compresses a double slice at full 64-bit precision (lossless).
+///
+/// See [`compress_f32`] for details; this is the `f64` equivalent.
+pub fn compress_f64(data: &[f64], nx: u32, ny: u32, nz: u32, nf: u32) -> Result<Vec<u8>> {
+    compress_f64_prec(data, nx, ny, nz, nf, 64)
+}
+
+/// Decompresses compressed data to a float vector.
+///
+/// The precision and dimensions are read from the embedded header.
+///
+/// # Errors
+/// Returns [`FpZipError::TypeMismatch`] if the compressed data contains doubles.
+pub fn decompress_f32(data: &[u8]) -> Result<Vec<f32>> {
+    decompress_f32_impl(data).map(|(_, v)| v)
+}
+
+/// Decompresses compressed data to a double vector.
+///
+/// See [`decompress_f32`] for details; this is the `f64` equivalent.
+pub fn decompress_f64(data: &[u8]) -> Result<Vec<f64>> {
+    decompress_f64_impl(data).map(|(_, v)| v)
 }
 
 /// Decompresses float data into a pre-allocated buffer. Returns the header.
+///
+/// # Errors
+/// Returns [`FpZipError::BufferTooSmall`] if `output` is smaller than the decompressed array.
 pub fn decompress_f32_into(data: &[u8], output: &mut [f32]) -> Result<FpZipHeader> {
     let mut dec = RangeDecoder::new(data);
     dec.init();
@@ -109,6 +167,7 @@ pub fn decompress_f32_into(data: &[u8], output: &mut [f32]) -> Result<FpZipHeade
         });
     }
 
+    let bits = if header.prec == 0 { 32 } else { header.prec };
     let total = header.total_elements() as usize;
     if output.len() < total {
         return Err(FpZipError::BufferTooSmall {
@@ -116,7 +175,6 @@ pub fn decompress_f32_into(data: &[u8], output: &mut [f32]) -> Result<FpZipHeade
             available: output.len(),
         });
     }
-
     decoder::decompress_4d_float(
         &mut dec,
         output,
@@ -124,12 +182,14 @@ pub fn decompress_f32_into(data: &[u8], output: &mut [f32]) -> Result<FpZipHeade
         header.ny as i32,
         header.nz as i32,
         header.nf as i32,
+        bits,
     );
-
     Ok(header)
 }
 
 /// Decompresses double data into a pre-allocated buffer. Returns the header.
+///
+/// See [`decompress_f32_into`] for details; this is the `f64` equivalent.
 pub fn decompress_f64_into(data: &[u8], output: &mut [f64]) -> Result<FpZipHeader> {
     let mut dec = RangeDecoder::new(data);
     dec.init();
@@ -142,6 +202,7 @@ pub fn decompress_f64_into(data: &[u8], output: &mut [f64]) -> Result<FpZipHeade
         });
     }
 
+    let bits = if header.prec == 0 { 64 } else { header.prec };
     let total = header.total_elements() as usize;
     if output.len() < total {
         return Err(FpZipError::BufferTooSmall {
@@ -149,7 +210,6 @@ pub fn decompress_f64_into(data: &[u8], output: &mut [f64]) -> Result<FpZipHeade
             available: output.len(),
         });
     }
-
     decoder::decompress_4d_double(
         &mut dec,
         output,
@@ -157,13 +217,17 @@ pub fn decompress_f64_into(data: &[u8], output: &mut [f64]) -> Result<FpZipHeade
         header.ny as i32,
         header.nz as i32,
         header.nf as i32,
+        bits,
     );
-
     Ok(header)
 }
 
-/// Compresses float data into a pre-allocated byte buffer.
-/// Returns number of bytes written, or error if buffer too small.
+/// Compresses a float slice at full precision into a pre-allocated byte buffer.
+///
+/// Returns the number of bytes written on success.
+///
+/// # Errors
+/// Returns [`FpZipError::BufferTooSmall`] if `destination` cannot hold the compressed output.
 pub fn compress_f32_into(
     data: &[f32],
     destination: &mut [u8],
@@ -183,7 +247,9 @@ pub fn compress_f32_into(
     Ok(compressed.len())
 }
 
-/// Compresses double data into a pre-allocated byte buffer.
+/// Compresses a double slice at full precision into a pre-allocated byte buffer.
+///
+/// See [`compress_f32_into`] for details; this is the `f64` equivalent.
 pub fn compress_f64_into(
     data: &[f64],
     destination: &mut [u8],
@@ -203,76 +269,138 @@ pub fn compress_f64_into(
     Ok(compressed.len())
 }
 
-/// Reads the header from compressed data without decompressing.
+/// Reads the header from compressed data without decompressing the array.
+///
+/// Useful for inspecting dimensions and type before allocating output buffers.
 pub fn read_header(data: &[u8]) -> Result<FpZipHeader> {
     let mut dec = RangeDecoder::new(data);
     dec.init();
     FpZipHeader::read_from_decoder(&mut dec)
 }
 
-/// Gets the maximum possible compressed size for the given element count.
+/// Returns an upper bound on the compressed size for the given element count.
+///
+/// Use this to allocate a buffer for [`compress_f32_into`] or [`compress_f64_into`].
 pub fn max_compressed_size(element_count: usize, data_type: FpZipType) -> usize {
     let element_size = match data_type {
         FpZipType::Float => 4,
         FpZipType::Double => 8,
     };
     let data_size = element_count * element_size;
-    // Header is encoded through range coder so no separate header size needed,
-    // but add margin for worst-case expansion
     data_size + (data_size / 20) + 128
 }
 
-/// Builder for advanced compression usage.
+/// Builder for configuring and executing fpzip compression.
+///
+/// Provides a fluent API for setting dimensions and precision before compressing.
+/// Defaults to 1D (`ny=1, nz=1, nf=1`) at full precision (lossless).
+///
+/// # Example
+///
+/// ```
+/// use fpzip_rs::{FpZipCompressor, decompress_f32};
+///
+/// let data: Vec<f32> = (0..64).map(|i| i as f32).collect();
+/// let compressed = FpZipCompressor::new(4)
+///     .ny(4)
+///     .nz(4)
+///     .compress_f32(&data)
+///     .unwrap();
+///
+/// let decompressed = decompress_f32(&compressed).unwrap();
+/// assert_eq!(data, decompressed);
+/// ```
 pub struct FpZipCompressor {
     nx: u32,
     ny: u32,
     nz: u32,
     nf: u32,
+    prec: u32,
 }
 
 impl FpZipCompressor {
+    /// Creates a new compressor for an array with X dimension `nx`.
     pub fn new(nx: u32) -> Self {
         Self {
             nx,
             ny: 1,
             nz: 1,
             nf: 1,
+            prec: 0,
         }
     }
 
+    /// Sets the Y dimension (default: 1).
     pub fn ny(mut self, ny: u32) -> Self {
         self.ny = ny;
         self
     }
 
+    /// Sets the Z dimension (default: 1).
     pub fn nz(mut self, nz: u32) -> Self {
         self.nz = nz;
         self
     }
 
+    /// Sets the number of fields / 4th dimension (default: 1).
     pub fn nf(mut self, nf: u32) -> Self {
         self.nf = nf;
         self
     }
 
+    /// Sets the bit precision for lossy compression.
+    ///
+    /// - `0` or full type width (32 for float, 64 for double) = lossless.
+    /// - For float: valid range is 2..=32.
+    /// - For double: valid range is 4..=64 (even values only).
+    /// - Lower precision gives better compression ratios at the cost of accuracy.
+    pub fn prec(mut self, prec: u32) -> Self {
+        self.prec = prec;
+        self
+    }
+
+    /// Compresses a float slice with the configured dimensions and precision.
     pub fn compress_f32(&self, data: &[f32]) -> Result<Vec<u8>> {
-        compress_f32(data, self.nx, self.ny, self.nz, self.nf)
+        compress_f32_prec(data, self.nx, self.ny, self.nz, self.nf, self.prec)
     }
 
+    /// Compresses a double slice with the configured dimensions and precision.
     pub fn compress_f64(&self, data: &[f64]) -> Result<Vec<u8>> {
-        compress_f64(data, self.nx, self.ny, self.nz, self.nf)
+        compress_f64_prec(data, self.nx, self.ny, self.nz, self.nf, self.prec)
     }
 
+    /// Compresses a float slice into a pre-allocated buffer.
     pub fn compress_f32_into(&self, data: &[f32], dest: &mut [u8]) -> Result<usize> {
-        compress_f32_into(data, dest, self.nx, self.ny, self.nz, self.nf)
+        let compressed = self.compress_f32(data)?;
+        if compressed.len() > dest.len() {
+            return Err(FpZipError::BufferTooSmall {
+                needed: compressed.len(),
+                available: dest.len(),
+            });
+        }
+        dest[..compressed.len()].copy_from_slice(&compressed);
+        Ok(compressed.len())
     }
 
+    /// Compresses a double slice into a pre-allocated buffer.
     pub fn compress_f64_into(&self, data: &[f64], dest: &mut [u8]) -> Result<usize> {
-        compress_f64_into(data, dest, self.nx, self.ny, self.nz, self.nf)
+        let compressed = self.compress_f64(data)?;
+        if compressed.len() > dest.len() {
+            return Err(FpZipError::BufferTooSmall {
+                needed: compressed.len(),
+                available: dest.len(),
+            });
+        }
+        dest[..compressed.len()].copy_from_slice(&compressed);
+        Ok(compressed.len())
     }
 }
 
-/// Stream-based compression for float data.
+// --- Stream-based APIs ---
+
+/// Compresses a float slice and writes the output to a writer.
+///
+/// Returns the number of bytes written.
 #[cfg(feature = "std")]
 pub fn compress_f32_to_writer<W: std::io::Write>(
     data: &[f32],
@@ -287,7 +415,9 @@ pub fn compress_f32_to_writer<W: std::io::Write>(
     Ok(compressed.len() as u64)
 }
 
-/// Stream-based compression for double data.
+/// Compresses a double slice and writes the output to a writer.
+///
+/// See [`compress_f32_to_writer`] for details; this is the `f64` equivalent.
 #[cfg(feature = "std")]
 pub fn compress_f64_to_writer<W: std::io::Write>(
     data: &[f64],
@@ -302,40 +432,28 @@ pub fn compress_f64_to_writer<W: std::io::Write>(
     Ok(compressed.len() as u64)
 }
 
-/// Stream-based decompression for float data.
+/// Reads and decompresses float data from a reader.
+///
+/// Returns the header and decompressed data.
 #[cfg(feature = "std")]
 pub fn decompress_f32_from_reader<R: std::io::Read>(
     reader: &mut R,
 ) -> Result<(FpZipHeader, Vec<f32>)> {
     let mut data = Vec::new();
     reader.read_to_end(&mut data)?;
-    let header_copy = read_header(&data)?;
-    if header_copy.data_type != FpZipType::Float {
-        return Err(FpZipError::TypeMismatch {
-            expected: FpZipType::Float,
-            actual: header_copy.data_type,
-        });
-    }
-    let result = decompress_f32(&data)?;
-    Ok((header_copy, result))
+    decompress_f32_impl(&data)
 }
 
-/// Stream-based decompression for double data.
+/// Reads and decompresses double data from a reader.
+///
+/// See [`decompress_f32_from_reader`] for details; this is the `f64` equivalent.
 #[cfg(feature = "std")]
 pub fn decompress_f64_from_reader<R: std::io::Read>(
     reader: &mut R,
 ) -> Result<(FpZipHeader, Vec<f64>)> {
     let mut data = Vec::new();
     reader.read_to_end(&mut data)?;
-    let header_copy = read_header(&data)?;
-    if header_copy.data_type != FpZipType::Double {
-        return Err(FpZipError::TypeMismatch {
-            expected: FpZipType::Double,
-            actual: header_copy.data_type,
-        });
-    }
-    let result = decompress_f64(&data)?;
-    Ok((header_copy, result))
+    decompress_f64_impl(&data)
 }
 
 fn validate_dimensions(data_length: usize, nx: u32, ny: u32, nz: u32, nf: u32) -> Result<()> {

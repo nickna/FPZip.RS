@@ -219,6 +219,54 @@ pub fn compress_double_stats(data: &[f64], nx: u32, ny: u32, nz: u32, nf: u32) -
     }
 }
 
+pub fn compress_float_stats_prec(
+    data: &[f32],
+    nx: u32,
+    ny: u32,
+    nz: u32,
+    nf: u32,
+    prec: u32,
+) -> CompressionStats {
+    let original_bytes = data.len() * 4;
+    let compressed = fpzip_rs::FpZipCompressor::new(nx)
+        .ny(ny)
+        .nz(nz)
+        .nf(nf)
+        .prec(prec)
+        .compress_f32(data)
+        .unwrap();
+    CompressionStats {
+        original_bytes,
+        compressed_bytes: compressed.len(),
+        value_count: data.len(),
+        compressed_data: compressed,
+    }
+}
+
+pub fn compress_double_stats_prec(
+    data: &[f64],
+    nx: u32,
+    ny: u32,
+    nz: u32,
+    nf: u32,
+    prec: u32,
+) -> CompressionStats {
+    let original_bytes = data.len() * 8;
+    let compressed = fpzip_rs::FpZipCompressor::new(nx)
+        .ny(ny)
+        .nz(nz)
+        .nf(nf)
+        .prec(prec)
+        .compress_f64(data)
+        .unwrap();
+    CompressionStats {
+        original_bytes,
+        compressed_bytes: compressed.len(),
+        value_count: data.len(),
+        compressed_data: compressed,
+    }
+}
+
 /// Jenkins one-at-a-time hash (same as C++ reference).
 pub fn jenkins_hash(data: &[u8]) -> u32 {
     let mut h: u32 = 0;

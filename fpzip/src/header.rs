@@ -8,22 +8,34 @@ pub const FPZ_MAJ_VERSION: u32 = 0x0110;
 /// C++ fpzip minor version (FPZIP_FP_INT = 4).
 pub const FPZ_MIN_VERSION: u32 = 4;
 
-/// Type of floating-point data.
+/// Type of floating-point data stored in the compressed stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FpZipType {
+    /// 32-bit IEEE 754 single-precision float.
     Float = 0,
+    /// 64-bit IEEE 754 double-precision float.
     Double = 1,
 }
 
-/// Header structure for FpZip compressed data.
+/// Metadata header for FpZip compressed data.
+///
+/// Contains the data type, bit precision, and array dimensions.
+/// The header is encoded through the arithmetic range coder as part of the
+/// compressed stream (not as raw bytes), matching the C++ fpzip wire format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FpZipHeader {
+    /// The floating-point type (float or double).
     pub data_type: FpZipType,
+    /// Bit precision. Full precision for the type means lossless (32 for float, 64 for double).
     pub prec: u32,
+    /// X dimension size.
     pub nx: u32,
+    /// Y dimension size.
     pub ny: u32,
+    /// Z dimension size.
     pub nz: u32,
+    /// Number of fields (4th dimension).
     pub nf: u32,
 }
 

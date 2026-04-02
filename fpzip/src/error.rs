@@ -1,8 +1,13 @@
+/// Errors that can occur during FPZip compression or decompression.
 #[derive(Debug)]
 pub enum FpZipError {
+    /// The compressed data does not start with the fpzip magic number.
     InvalidMagic(u32),
+    /// The format version in the header is not supported.
     UnsupportedVersion(u16),
+    /// The data type byte in the header is not 0 (float) or 1 (double).
     InvalidDataType(u8),
+    /// The input data length does not match `nx * ny * nz * nf`.
     DimensionMismatch {
         actual: usize,
         expected: u64,
@@ -11,15 +16,16 @@ pub enum FpZipError {
         nz: u32,
         nf: u32,
     },
+    /// Attempted to decompress float data as double, or vice versa.
     TypeMismatch {
         expected: crate::header::FpZipType,
         actual: crate::header::FpZipType,
     },
-    BufferTooSmall {
-        needed: usize,
-        available: usize,
-    },
+    /// The output buffer is too small for the result.
+    BufferTooSmall { needed: usize, available: usize },
+    /// The compressed data ended unexpectedly.
     UnexpectedEof,
+    /// An I/O error occurred during stream-based operations.
     #[cfg(feature = "std")]
     Io(std::io::Error),
 }
@@ -78,4 +84,5 @@ impl From<std::io::Error> for FpZipError {
     }
 }
 
+/// A specialized `Result` type for fpzip operations.
 pub type Result<T> = core::result::Result<T, FpZipError>;

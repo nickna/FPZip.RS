@@ -1,39 +1,59 @@
 use crate::codec::range_decoder::RangeDecoder;
 use crate::codec::rc_qs_model::RCQsModel;
+use crate::core::pc_map;
 
-const FLOAT_BIAS: u32 = 32;
-const DOUBLE_BIAS: u32 = 64;
+const PC_BIT_MAX: u32 = 8;
 
 /// Predictive coder decoder for float values.
 pub struct PCDecoderFloat<'a, 'b> {
     decoder: &'a mut RangeDecoder<'b>,
     model: &'a mut RCQsModel,
+    bits: u32,
 }
 
 impl<'a, 'b> PCDecoderFloat<'a, 'b> {
-    pub fn new(decoder: &'a mut RangeDecoder<'b>, model: &'a mut RCQsModel) -> Self {
-        Self { decoder, model }
+    pub fn new(decoder: &'a mut RangeDecoder<'b>, model: &'a mut RCQsModel, bits: u32) -> Self {
+        Self {
+            decoder,
+            model,
+            bits,
+        }
     }
 
-    /// Decodes a value given a prediction.
     #[inline]
     pub fn decode(&mut self, predicted: u32) -> u32 {
+        let predicted = pc_map::mask_u32(predicted, self.bits);
+        if self.bits > PC_BIT_MAX {
+            self.decode_wide(predicted)
+        } else {
+            self.decode_narrow(predicted)
+        }
+    }
+
+    #[inline]
+    fn decode_wide(&mut self, predicted: u32) -> u32 {
+        let bias = self.bits;
         let s = self.decoder.decode_with_model(self.model);
 
-        if s > FLOAT_BIAS {
-            // Underprediction
-            let k = (s - FLOAT_BIAS - 1) as i32;
+        if s > bias {
+            let k = (s - bias - 1) as i32;
             let d = (1u32 << k) + self.decoder.decode_uint(k);
-            predicted.wrapping_add(d)
-        } else if s < FLOAT_BIAS {
-            // Overprediction
-            let k = (FLOAT_BIAS - 1 - s) as i32;
+            pc_map::mask_u32(predicted.wrapping_add(d), self.bits)
+        } else if s < bias {
+            let k = (bias - 1 - s) as i32;
             let d = (1u32 << k) + self.decoder.decode_uint(k);
-            predicted.wrapping_sub(d)
+            pc_map::mask_u32(predicted.wrapping_sub(d), self.bits)
         } else {
-            // Perfect prediction
             predicted
         }
+    }
+
+    #[inline]
+    fn decode_narrow(&mut self, predicted: u32) -> u32 {
+        let bias = (1u32 << self.bits) - 1;
+        let s = self.decoder.decode_with_model(self.model);
+        let r = predicted.wrapping_add(s).wrapping_sub(bias);
+        pc_map::mask_u32(r, self.bits)
     }
 }
 
@@ -41,31 +61,51 @@ impl<'a, 'b> PCDecoderFloat<'a, 'b> {
 pub struct PCDecoderDouble<'a, 'b> {
     decoder: &'a mut RangeDecoder<'b>,
     model: &'a mut RCQsModel,
+    bits: u32,
 }
 
 impl<'a, 'b> PCDecoderDouble<'a, 'b> {
-    pub fn new(decoder: &'a mut RangeDecoder<'b>, model: &'a mut RCQsModel) -> Self {
-        Self { decoder, model }
+    pub fn new(decoder: &'a mut RangeDecoder<'b>, model: &'a mut RCQsModel, bits: u32) -> Self {
+        Self {
+            decoder,
+            model,
+            bits,
+        }
     }
 
-    /// Decodes a value given a prediction.
     #[inline]
     pub fn decode(&mut self, predicted: u64) -> u64 {
+        let predicted = pc_map::mask_u64(predicted, self.bits);
+        if self.bits > PC_BIT_MAX {
+            self.decode_wide(predicted)
+        } else {
+            self.decode_narrow(predicted)
+        }
+    }
+
+    #[inline]
+    fn decode_wide(&mut self, predicted: u64) -> u64 {
+        let bias = self.bits;
         let s = self.decoder.decode_with_model(self.model);
 
-        if s > DOUBLE_BIAS {
-            // Underprediction
-            let k = (s - DOUBLE_BIAS - 1) as i32;
+        if s > bias {
+            let k = (s - bias - 1) as i32;
             let d = (1u64 << k) + self.decoder.decode_ulong(k);
-            predicted.wrapping_add(d)
-        } else if s < DOUBLE_BIAS {
-            // Overprediction
-            let k = (DOUBLE_BIAS - 1 - s) as i32;
+            pc_map::mask_u64(predicted.wrapping_add(d), self.bits)
+        } else if s < bias {
+            let k = (bias - 1 - s) as i32;
             let d = (1u64 << k) + self.decoder.decode_ulong(k);
-            predicted.wrapping_sub(d)
+            pc_map::mask_u64(predicted.wrapping_sub(d), self.bits)
         } else {
-            // Perfect prediction
             predicted
         }
+    }
+
+    #[inline]
+    fn decode_narrow(&mut self, predicted: u64) -> u64 {
+        let bias = (1u64 << self.bits) - 1;
+        let s = self.decoder.decode_with_model(self.model) as u64;
+        let r = predicted.wrapping_add(s).wrapping_sub(bias);
+        pc_map::mask_u64(r, self.bits)
     }
 }

@@ -8,14 +8,16 @@ const NX: u32 = 65;
 const NY: u32 = 64;
 const NZ: u32 = 63;
 
-// Expected checksums for byte-identical C++ output (FPZIP_FP_INT lossless mode)
-// From testfpzip.c cksum[3][2][0..2] indexed as [1D, 2D, 3D]
-const EXPECTED_FLOAT_CHECKSUM_1D: u32 = 0x3e32e8c1;
-const EXPECTED_FLOAT_CHECKSUM_2D: u32 = 0x8bb6d562;
-const EXPECTED_FLOAT_CHECKSUM_3D: u32 = 0x5d710559;
-const EXPECTED_DOUBLE_CHECKSUM_1D: u32 = 0x7cc58c60;
-const EXPECTED_DOUBLE_CHECKSUM_2D: u32 = 0xc5f53ff4;
-const EXPECTED_DOUBLE_CHECKSUM_3D: u32 = 0xbfc5a355;
+// Expected checksums for byte-identical C++ output (FPZIP_FP_INT mode)
+// From testfpzip.c cksum[3] (FPZIP_FP_INT index), indexed as [prec_level][dim_layout]
+// Float: prec_levels = [8, 16, 32(lossless)], dim_layouts = [1D, 2D, 3D]
+const EXPECTED_FLOAT_PREC8: [u32; 3] = [0x53dace3e, 0xd5c02207, 0x3507af15];
+const EXPECTED_FLOAT_PREC16: [u32; 3] = [0x99de7d80, 0xe9cc6e16, 0x7971d6ba];
+const EXPECTED_FLOAT_PREC32: [u32; 3] = [0x3e32e8c1, 0x8bb6d562, 0x5d710559];
+// Double: prec_levels = [16, 32, 64(lossless)], dim_layouts = [1D, 2D, 3D]
+const EXPECTED_DOUBLE_PREC16: [u32; 3] = [0x914f81dd, 0x3f845616, 0xe09ab2d4];
+const EXPECTED_DOUBLE_PREC32: [u32; 3] = [0x670ccd29, 0x1725b2d2, 0x2421464a];
+const EXPECTED_DOUBLE_PREC64: [u32; 3] = [0x7cc58c60, 0xc5f53ff4, 0xbfc5a355];
 
 // C++ baseline compression ratios (bits per value)
 const CPP_FLOAT_TRILINEAR_BPV: f64 = 23.92;
@@ -67,60 +69,188 @@ fn double_trilinear_field_meets_cpp_baseline() {
     );
 }
 
-// --- C++ byte-identical checksum tests (FPZIP_FP_INT lossless) ---
+// --- C++ byte-identical checksum tests (FPZIP_FP_INT mode, all precisions) ---
 // The C++ test compresses the same field data with 3 dimension layouts:
 //   1D: (nx*ny*nz, 1, 1)
 //   2D: (nx, ny*nz, 1)
 //   3D: (nx, ny, nz)
+// and 3 precision levels per type:
+//   float:  prec = 8, 16, 32 (lossless)
+//   double: prec = 16, 32, 64 (lossless)
 
-#[test]
-fn float_trilinear_matches_cpp_checksum_1d() {
-    let field = generate_float_field(NX as usize, NY as usize, NZ as usize, 0.0, 1);
-    let stats = compress_float_stats(&field, NX * NY * NZ, 1, 1, 1);
-    assert_eq!(EXPECTED_FLOAT_CHECKSUM_1D, jenkins_hash(&stats.compressed_data));
+fn float_field() -> Vec<f32> {
+    generate_float_field(NX as usize, NY as usize, NZ as usize, 0.0, 1)
 }
 
-#[test]
-fn float_trilinear_matches_cpp_checksum_2d() {
-    let field = generate_float_field(NX as usize, NY as usize, NZ as usize, 0.0, 1);
-    let stats = compress_float_stats(&field, NX, NY * NZ, 1, 1);
-    assert_eq!(EXPECTED_FLOAT_CHECKSUM_2D, jenkins_hash(&stats.compressed_data));
+fn double_field() -> Vec<f64> {
+    // C++ uses static PRNG seed that persists after float_field() generation
+    let (_, seed) = generate_float_field_with_seed(NX as usize, NY as usize, NZ as usize, 0.0, 1);
+    generate_double_field(NX as usize, NY as usize, NZ as usize, 0.0, seed)
 }
 
-#[test]
-fn float_trilinear_matches_cpp_checksum_3d() {
-    let field = generate_float_field(NX as usize, NY as usize, NZ as usize, 0.0, 1);
-    let stats = compress_float_stats(&field, NX, NY, NZ, 1);
-    assert_eq!(EXPECTED_FLOAT_CHECKSUM_3D, jenkins_hash(&stats.compressed_data));
+fn assert_float_checksum(field: &[f32], prec: u32, nx: u32, ny: u32, nz: u32, expected: u32) {
+    let stats = compress_float_stats_prec(field, nx, ny, nz, 1, prec);
+    let actual = jenkins_hash(&stats.compressed_data);
+    assert_eq!(
+        expected, actual,
+        "float prec={prec} dims=({nx},{ny},{nz}): expected 0x{expected:08x}, got 0x{actual:08x}"
+    );
 }
 
-#[test]
-fn double_trilinear_matches_cpp_checksum_1d() {
-    // C++ uses a static seed that persists across float_field() and double_field() calls.
-    // The float test runs first, consuming PRNG state.
-    let (_, seed) =
-        generate_float_field_with_seed(NX as usize, NY as usize, NZ as usize, 0.0, 1);
-    let field = generate_double_field(NX as usize, NY as usize, NZ as usize, 0.0, seed);
-    let stats = compress_double_stats(&field, NX * NY * NZ, 1, 1, 1);
-    assert_eq!(EXPECTED_DOUBLE_CHECKSUM_1D, jenkins_hash(&stats.compressed_data));
+fn assert_double_checksum(field: &[f64], prec: u32, nx: u32, ny: u32, nz: u32, expected: u32) {
+    let stats = compress_double_stats_prec(field, nx, ny, nz, 1, prec);
+    let actual = jenkins_hash(&stats.compressed_data);
+    assert_eq!(
+        expected, actual,
+        "double prec={prec} dims=({nx},{ny},{nz}): expected 0x{expected:08x}, got 0x{actual:08x}"
+    );
 }
 
+// Float prec=8
 #[test]
-fn double_trilinear_matches_cpp_checksum_2d() {
-    let (_, seed) =
-        generate_float_field_with_seed(NX as usize, NY as usize, NZ as usize, 0.0, 1);
-    let field = generate_double_field(NX as usize, NY as usize, NZ as usize, 0.0, seed);
-    let stats = compress_double_stats(&field, NX, NY * NZ, 1, 1);
-    assert_eq!(EXPECTED_DOUBLE_CHECKSUM_2D, jenkins_hash(&stats.compressed_data));
+fn float_prec8_checksum_1d() {
+    assert_float_checksum(
+        &float_field(),
+        8,
+        NX * NY * NZ,
+        1,
+        1,
+        EXPECTED_FLOAT_PREC8[0],
+    );
+}
+#[test]
+fn float_prec8_checksum_2d() {
+    assert_float_checksum(&float_field(), 8, NX, NY * NZ, 1, EXPECTED_FLOAT_PREC8[1]);
+}
+#[test]
+fn float_prec8_checksum_3d() {
+    assert_float_checksum(&float_field(), 8, NX, NY, NZ, EXPECTED_FLOAT_PREC8[2]);
 }
 
+// Float prec=16
 #[test]
-fn double_trilinear_matches_cpp_checksum_3d() {
-    let (_, seed) =
-        generate_float_field_with_seed(NX as usize, NY as usize, NZ as usize, 0.0, 1);
-    let field = generate_double_field(NX as usize, NY as usize, NZ as usize, 0.0, seed);
-    let stats = compress_double_stats(&field, NX, NY, NZ, 1);
-    assert_eq!(EXPECTED_DOUBLE_CHECKSUM_3D, jenkins_hash(&stats.compressed_data));
+fn float_prec16_checksum_1d() {
+    assert_float_checksum(
+        &float_field(),
+        16,
+        NX * NY * NZ,
+        1,
+        1,
+        EXPECTED_FLOAT_PREC16[0],
+    );
+}
+#[test]
+fn float_prec16_checksum_2d() {
+    assert_float_checksum(&float_field(), 16, NX, NY * NZ, 1, EXPECTED_FLOAT_PREC16[1]);
+}
+#[test]
+fn float_prec16_checksum_3d() {
+    assert_float_checksum(&float_field(), 16, NX, NY, NZ, EXPECTED_FLOAT_PREC16[2]);
+}
+
+// Float prec=32 (lossless)
+#[test]
+fn float_prec32_checksum_1d() {
+    assert_float_checksum(
+        &float_field(),
+        32,
+        NX * NY * NZ,
+        1,
+        1,
+        EXPECTED_FLOAT_PREC32[0],
+    );
+}
+#[test]
+fn float_prec32_checksum_2d() {
+    assert_float_checksum(&float_field(), 32, NX, NY * NZ, 1, EXPECTED_FLOAT_PREC32[1]);
+}
+#[test]
+fn float_prec32_checksum_3d() {
+    assert_float_checksum(&float_field(), 32, NX, NY, NZ, EXPECTED_FLOAT_PREC32[2]);
+}
+
+// Double prec=16
+#[test]
+fn double_prec16_checksum_1d() {
+    assert_double_checksum(
+        &double_field(),
+        16,
+        NX * NY * NZ,
+        1,
+        1,
+        EXPECTED_DOUBLE_PREC16[0],
+    );
+}
+#[test]
+fn double_prec16_checksum_2d() {
+    assert_double_checksum(
+        &double_field(),
+        16,
+        NX,
+        NY * NZ,
+        1,
+        EXPECTED_DOUBLE_PREC16[1],
+    );
+}
+#[test]
+fn double_prec16_checksum_3d() {
+    assert_double_checksum(&double_field(), 16, NX, NY, NZ, EXPECTED_DOUBLE_PREC16[2]);
+}
+
+// Double prec=32
+#[test]
+fn double_prec32_checksum_1d() {
+    assert_double_checksum(
+        &double_field(),
+        32,
+        NX * NY * NZ,
+        1,
+        1,
+        EXPECTED_DOUBLE_PREC32[0],
+    );
+}
+#[test]
+fn double_prec32_checksum_2d() {
+    assert_double_checksum(
+        &double_field(),
+        32,
+        NX,
+        NY * NZ,
+        1,
+        EXPECTED_DOUBLE_PREC32[1],
+    );
+}
+#[test]
+fn double_prec32_checksum_3d() {
+    assert_double_checksum(&double_field(), 32, NX, NY, NZ, EXPECTED_DOUBLE_PREC32[2]);
+}
+
+// Double prec=64 (lossless)
+#[test]
+fn double_prec64_checksum_1d() {
+    assert_double_checksum(
+        &double_field(),
+        64,
+        NX * NY * NZ,
+        1,
+        1,
+        EXPECTED_DOUBLE_PREC64[0],
+    );
+}
+#[test]
+fn double_prec64_checksum_2d() {
+    assert_double_checksum(
+        &double_field(),
+        64,
+        NX,
+        NY * NZ,
+        1,
+        EXPECTED_DOUBLE_PREC64[1],
+    );
+}
+#[test]
+fn double_prec64_checksum_3d() {
+    assert_double_checksum(&double_field(), 64, NX, NY, NZ, EXPECTED_DOUBLE_PREC64[2]);
 }
 
 // --- Data Pattern Tests - Float ---

@@ -1,15 +1,17 @@
 # fpzip-rs
 
-Lossless compression for multi-dimensional floating-point arrays, implemented in pure Rust.
+Lossless and lossy compression for multi-dimensional floating-point arrays, implemented in pure Rust.
 
-A faithful port of Peter Lindstrom's [FPZip](https://computing.llnl.gov/projects/fpzip) algorithm. Compresses `f32` and `f64` arrays with 1D, 2D, 3D, and 4D support. Designed for scientific and numerical data with high spatial correlation.
+A faithful port of Peter Lindstrom's [FPZip](https://computing.llnl.gov/projects/fpzip) algorithm, producing byte-identical output with the C++ reference implementation. Compresses `f32` and `f64` arrays with 1D, 2D, 3D, and 4D support. Designed for scientific and numerical data with high spatial correlation.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ## Features
 
-- Lossless compression for `f32` and `f64` arrays
+- Lossless and lossy compression for `f32` and `f64` arrays
+- Configurable bit precision (2-32 bits for float, 4-64 bits for double)
 - Multi-dimensional support (1D, 2D, 3D, 4D)
+- Byte-identical output with C++ fpzip (verified via checksums at all precisions)
 - Pure Rust with no unsafe in the core library
 - `no_std` compatible (with `alloc`)
 - C FFI layer for calling from C/C++/Python/etc.
@@ -25,7 +27,7 @@ Add to your `Cargo.toml`:
 fpzip-rs = "0.1"
 ```
 
-### Compress and decompress
+### Compress and decompress (lossless)
 
 ```rust
 use fpzip_rs::{compress_f32, decompress_f32};
@@ -37,6 +39,25 @@ let compressed = compress_f32(&data, 10, 10, 10, 1).unwrap();
 let decompressed = decompress_f32(&compressed).unwrap();
 
 assert_eq!(data, decompressed); // lossless!
+```
+
+### Lossy compression with reduced precision
+
+```rust
+use fpzip_rs::{FpZipCompressor, decompress_f32};
+
+let data: Vec<f32> = (0..1000).map(|i| (i as f32 * 0.01).sin()).collect();
+
+// Compress at 16-bit precision (lossy, better compression ratio)
+let compressed = FpZipCompressor::new(10)
+    .ny(10)
+    .nz(10)
+    .prec(16)
+    .compress_f32(&data)
+    .unwrap();
+
+let decompressed = decompress_f32(&compressed).unwrap();
+// Values are close but not identical due to reduced precision
 ```
 
 ### Builder API
@@ -93,8 +114,8 @@ let header = decompress_f32_into(compressed, &mut output).unwrap();
 
 | Function | Description |
 |----------|-------------|
-| `compress_f32(data, nx, ny, nz, nf)` | Compress `&[f32]` to `Vec<u8>` |
-| `compress_f64(data, nx, ny, nz, nf)` | Compress `&[f64]` to `Vec<u8>` |
+| `compress_f32(data, nx, ny, nz, nf)` | Compress `&[f32]` to `Vec<u8>` (lossless) |
+| `compress_f64(data, nx, ny, nz, nf)` | Compress `&[f64]` to `Vec<u8>` (lossless) |
 | `decompress_f32(data)` | Decompress `&[u8]` to `Vec<f32>` |
 | `decompress_f64(data)` | Decompress `&[u8]` to `Vec<f64>` |
 | `compress_f32_into(data, buf, ...)` | Compress into pre-allocated `&mut [u8]` |
@@ -110,11 +131,17 @@ Double variants (`f64`) are available for all functions.
 
 ```rust
 FpZipCompressor::new(nx)
-    .ny(ny)    // default: 1
-    .nz(nz)    // default: 1
-    .nf(nf)    // default: 1
+    .ny(ny)      // default: 1
+    .nz(nz)      // default: 1
+    .nf(nf)      // default: 1
+    .prec(prec)  // default: full precision (lossless)
     .compress_f32(data)
 ```
+
+The `prec` parameter controls bit precision:
+- **Float**: 2-32 (32 = lossless)
+- **Double**: 4-64 (64 = lossless)
+- Lower precision gives better compression ratios at the cost of accuracy.
 
 ## Workspace Crates
 
@@ -154,7 +181,7 @@ if (rc != 0) {
 FPZip combines three techniques:
 
 1. **Lorenzo predictor** -- predicts each value from 7 neighbors in a 3D wavefront
-2. **Integer mapping** -- bijectively maps IEEE 754 floats to unsigned integers preserving ordering
+2. **Integer mapping** -- bijectively maps IEEE 754 floats to unsigned integers preserving ordering, with configurable bit precision
 3. **Adaptive arithmetic coding** -- range coder with quasi-static probability model
 
 The predictor formula in integer domain:
@@ -163,24 +190,35 @@ The predictor formula in integer domain:
 p = f[1,0,0] - f[0,1,1] + f[0,1,0] - f[1,0,1] + f[0,0,1] - f[1,1,0] + f[1,1,1]
 ```
 
-Only the residual (actual - predicted) is entropy coded, achieving high compression on spatially correlated data.
+Only the residual (actual - predicted) is entropy coded. For wide alphabets (precision > 8 bits), residuals are split into an exponent symbol and verbatim mantissa bits. For narrow alphabets (precision <= 8 bits), the residual is encoded as a single symbol.
 
 ## Compressed Format
 
-24-byte header (little-endian):
+The entire compressed stream (header + data) is encoded through an arithmetic range coder, matching the C++ fpzip wire format. The header fields are:
 
-| Offset | Size | Field |
-|--------|------|-------|
-| 0 | 4 | Magic: `0x007A7066` (`fpz\0`) |
-| 4 | 2 | Version |
-| 6 | 1 | Type (0=float, 1=double) |
-| 7 | 1 | Reserved |
-| 8 | 4 | nx |
-| 12 | 4 | ny |
-| 16 | 4 | nz |
-| 20 | 4 | nf |
+| Field | Bits | Description |
+|-------|------|-------------|
+| Magic | 32 | `'f'`, `'p'`, `'z'`, `'\0'` (8 bits each) |
+| Major version | 16 | `0x0110` |
+| Minor version | 8 | `4` (FPZIP_FP_INT mode) |
+| Type | 1 | `0` = float, `1` = double |
+| Precision | 7 | Bit precision (0 = full) |
+| nx | 32 | X dimension |
+| ny | 32 | Y dimension |
+| nz | 32 | Z dimension |
+| nf | 32 | Number of fields |
 
-Followed by the arithmetic-coded compressed stream.
+Followed immediately by the arithmetic-coded prediction residuals.
+
+## C++ Compatibility
+
+This implementation produces byte-identical output with the C++ fpzip library (FPZIP_FP_INT mode). Compatibility is verified by 18 Jenkins checksum tests covering:
+
+- Float at precision 8, 16, and 32 (lossless)
+- Double at precision 16, 32, and 64 (lossless)
+- 1D, 2D, and 3D dimension layouts
+
+Data compressed by this library can be decompressed by the C++ fpzip library and vice versa.
 
 ## License
 
